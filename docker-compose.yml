@@ -1,0 +1,54 @@
+version: "3.9"
+
+volumes:
+  jenkins_home: {}
+  docker_certs_ca: {}
+  docker_certs_client: {}
+  docker_cache: {}
+
+networks:
+  jenkins:
+    name: jenkins
+
+services:
+  dind:
+    image: docker:27-dind
+    privileged: true
+    command: ["--storage-driver=overlay2"]
+    environment:
+      - DOCKER_TLS_CERTDIR=/certs
+    volumes:
+      - docker_certs_ca:/certs/ca
+      - docker_certs_client:/certs/client
+      - docker_cache:/var/lib/docker
+    networks:
+      jenkins:
+        aliases: [docker]     # Jenkins reaches DinD at tcp://docker:2376
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  jenkins:
+    image: jenkins/jenkins:lts-jdk17
+    user: root
+    depends_on:
+      dind:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - DOCKER_HOST=tcp://docker:2376
+      - DOCKER_CERT_PATH=/certs/client
+      - DOCKER_TLS_VERIFY=1
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - docker_certs_client:/certs/client:ro
+      - ./jenkins_home/init.groovy.d:/var/jenkins_home/init.groovy.d:ro
+      - /usr/bin/docker:/usr/bin/docker:ro
+    networks: [jenkins]
+    restart: unless-stopped
