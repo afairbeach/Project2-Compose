@@ -1,54 +1,63 @@
-version: "3.9"
-
+# --------------------------
+# Define persistent volumes
+# --------------------------
 volumes:
-  jenkins_home: {}
-  docker_certs_ca: {}
-  docker_certs_client: {}
-  docker_cache: {}
+  jenkins_home: {}        # Stores Jenkins configuration, plugins, build history
+  docker_certs_ca: {}     # Holds TLS CA certs for secure Docker client/server communication
+  docker_certs_client: {} # Holds TLS client certs used by Jenkins to connect to DinD
+  docker_cache: {}        # Cache directory for Docker-in-Docker images/layers
 
+# --------------------------
+# Define Docker network
+# --------------------------
 networks:
   jenkins:
-    name: jenkins
+    name: jenkins   # Custom bridge network so Jenkins and DinD can communicate
+
 
 services:
+  # --------------------------
+  # Docker-in-Docker service
+  # --------------------------
   dind:
     image: docker:27-dind
-    privileged: true
-    command: ["--storage-driver=overlay2"]
+    privileged: true                 # Required so DinD can run the Docker daemon inside the container
+    command: ["--host=tcp://0.0.0.0:2376", "--host=unix:///var/run/docker.sock", "--storage-driver=overlay2"]
     environment:
-      - DOCKER_TLS_CERTDIR=/certs
+      - DOCKER_TLS_CERTDIR=/certs    # Enables automatic TLS cert generation for Docker daemon
     volumes:
       - docker_certs_ca:/certs/ca
       - docker_certs_client:/certs/client
       - docker_cache:/var/lib/docker
     networks:
       jenkins:
-        aliases: [docker]     # Jenkins reaches DinD at tcp://docker:2376
-    healthcheck:
-      test: ["CMD", "docker", "info"]
+        aliases: [docker]            # Jenkins can reach this container at "docker:2376"
+    healthcheck:                     # Ensures DinD is ready before Jenkins starts
+      test: ["CMD", "docker", "version"]
       interval: 10s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
+ # --------------------------
+  # Jenkins service
+  # --------------------------
   jenkins:
-    image: jenkins/jenkins:lts-jdk17
-    user: root
+    image: jenkins/jenkins:lts-jdk17 # Long-Term Support Jenkins with Java 17
+    user: root                       # Runs as root so Jenkins can install plugins and connect to Docker
     depends_on:
       dind:
-        condition: service_healthy
-    env_file: .env
+        condition: service_healthy   # Waits until DinD passes healthcheck before starting Jenkins
     environment:
-      - DOCKER_HOST=tcp://docker:2376
-      - DOCKER_CERT_PATH=/certs/client
-      - DOCKER_TLS_VERIFY=1
-      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
-    ports:
-      - "8080:8080"
-      - "50000:50000"
+      - DOCKER_HOST=tcp://docker:2376   # Jenkins connects to DinD on this network alias and port
+      - DOCKER_CERT_PATH=/certs/client  # Path to Docker client certs
+      - DOCKER_TLS_VERIFY=1             # Enforce TLS verification for secure connection
     volumes:
-      - jenkins_home:/var/jenkins_home
-      - docker_certs_client:/certs/client:ro
-      - ./jenkins_home/init.groovy.d:/var/jenkins_home/init.groovy.d:ro
-      - /usr/bin/docker:/usr/bin/docker:ro
-    networks: [jenkins]
+      - jenkins_home:/var/jenkins_home  # Persist Jenkins configuration
+      - docker_certs_client:/certs/client:ro # Mount client certs read-only
+    ports:
+      - "8080:8080"    # Jenkins Web UI
+      - "50000:50000"  # Jenkins inbound agent port
+    networks:
+      - jenkins
     restart: unless-stopped
